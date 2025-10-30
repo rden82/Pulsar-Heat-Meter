@@ -1,0 +1,12 @@
+{
+  "domain": "pulsar_heat",
+  "name": "Pulsar Heat Meter",
+  "codeowners": ["@your_username"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/your_username/hass-pulsar-heat",
+  "integration_type": "device",
+  "iot_class": "local_polling",
+  "requirements": ["crcmod==1.7"],
+  "version": "1.0.0"
+}
