@@ -26,6 +26,15 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
+# Sensors that must be monotonically increasing and non-zero
+MONOTONIC_SENSORS = {
+    'volume_pulse_3',  # Горячая вода
+    'volume_pulse_4',  # Холодная вода  
+    'total_operating_hours',
+    'energy',
+    'volume'
+}
+
 SENSOR_TYPES = {
     # Энергии
     "energy": {
@@ -146,20 +155,20 @@ SENSOR_TYPES = {
         "icon": "mdi:counter",
     },
     "volume_pulse_3": {
-        "name": "Горячая вода",  # ← Изменено название
+        "name": "Горячая вода",
         "key": "volume_pulse_3",
         "unit": UnitOfVolume.CUBIC_METERS,
         "device_class": SensorDeviceClass.VOLUME,
         "state_class": SensorStateClass.TOTAL_INCREASING,
-        "icon": "mdi:water-thermometer",  # Специальная иконка для горячей воды
+        "icon": "mdi:water-thermometer",
     },
     "volume_pulse_4": {
-        "name": "Холодная вода",  # ← Изменено название
+        "name": "Холодная вода", 
         "key": "volume_pulse_4", 
         "unit": UnitOfVolume.CUBIC_METERS,
         "device_class": SensorDeviceClass.VOLUME,
         "state_class": SensorStateClass.TOTAL_INCREASING,
-        "icon": "mdi:water",  # Иконка для холодной воды
+        "icon": "mdi:water",
     },
 }
 
@@ -190,6 +199,9 @@ class PulsarHeatMeterSensor(CoordinatorEntity, SensorEntity):
         self._device_info = device_info
         self._entry_id = entry_id
         
+        # Store previous valid values for monotonic sensors
+        self._previous_value = None
+        
         sensor_config = SENSOR_TYPES[sensor_type]
         self._attr_name = f"{device_info['name']} {sensor_config['name']}"
         self._attr_unique_id = f"{entry_id}_{sensor_type}"
@@ -198,6 +210,28 @@ class PulsarHeatMeterSensor(CoordinatorEntity, SensorEntity):
         self._attr_device_class = sensor_config.get("device_class")
         self._attr_state_class = sensor_config.get("state_class")
         self._attr_native_unit_of_measurement = sensor_config["unit"]
+
+    def _validate_monotonic_value(self, value: float) -> Optional[float]:
+        """Validate that value is increasing and non-zero for monotonic sensors."""
+        if self._sensor_type not in MONOTONIC_SENSORS:
+            return value
+            
+        # Filter out zero values
+        if value <= 0.001:
+            _LOGGER.debug("Filtering out zero value for %s: %f", self._sensor_type, value)
+            return self._previous_value
+            
+        # Check if value is increasing
+        if self._previous_value is not None and value < self._previous_value:
+            _LOGGER.warning(
+                "Value decreased for %s: %f -> %f. Keeping previous value.",
+                self._sensor_type, self._previous_value, value
+            )
+            return self._previous_value
+            
+        # Value is valid - update previous value
+        self._previous_value = value
+        return value
 
     @property
     def native_value(self):
@@ -210,15 +244,18 @@ class PulsarHeatMeterSensor(CoordinatorEntity, SensorEntity):
         if value is not None:
             # Округляем значения для лучшего отображения
             if self._sensor_type in ["energy", "volume", "volume_pulse_1", "volume_pulse_2", "volume_pulse_3", "volume_pulse_4"]:
-                return round(value, 4)  # Объёмы и энергия
+                value = round(value, 4)  # Объёмы и энергия
             elif self._sensor_type in ["supply_temperature", "return_temperature", "device_temperature", "temperature_difference"]:
-                return round(value, 2)  # Температуры
+                value = round(value, 2)  # Температуры
             elif self._sensor_type in ["flow", "power"]:
-                return round(value, 3)  # Расход и мощность
+                value = round(value, 3)  # Расход и мощность
             elif self._sensor_type == "battery_voltage":
-                return round(value / 1000.0, 3)  # мВ -> В
+                value = round(value / 1000.0, 3)  # мВ -> В
             elif self._sensor_type in ["total_operating_hours", "normal_operating_hours", "error_operating_hours"]:
-                return int(value)  # Время работы в часах
+                value = int(value)  # Время работы в часах
+            
+            # Apply monotonic validation for specific sensors
+            value = self._validate_monotonic_value(value)
         
         return value
 
@@ -230,3 +267,17 @@ class PulsarHeatMeterSensor(CoordinatorEntity, SensorEntity):
             and self.coordinator.data is not None
             and self.coordinator.data.get(SENSOR_TYPES[self._sensor_type]["key"]) is not None
         )
+
+    async def async_added_to_hass(self) -> None:
+        """When entity is added to hass."""
+        await super().async_added_to_hass()
+        
+        # Initialize previous value from current state if available
+        if self._sensor_type in MONOTONIC_SENSORS:
+            current_state = self.hass.states.get(self.entity_id)
+            if current_state and current_state.state not in ['unavailable', 'unknown', 'None', None]:
+                try:
+                    self._previous_value = float(current_state.state)
+                    _LOGGER.debug("Initialized previous value for %s: %f", self._sensor_type, self._previous_value)
+                except (ValueError, TypeError):
+                    pass
