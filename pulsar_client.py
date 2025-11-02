@@ -166,7 +166,7 @@ class PulsarHeatMeterClient:
                 
                 return real_data
         
-        _LOGGER.error("Failed to get data from device")
+        _LOGGER.warning("Failed to get data from device")
         return self._get_fallback_data()
 
     def _get_fallback_data(self) -> Dict[str, Any]:
